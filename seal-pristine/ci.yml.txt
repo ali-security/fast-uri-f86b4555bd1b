@@ -1,8 +1,20 @@
 name: CI
 
 on:
-  workflow_dispatch:
+  push:
+    branches:
+     - main
+     - next
+     - 'v*'
+    paths-ignore:
+      - 'docs/**'
+      - '*.md'
+  pull_request:
+    paths-ignore:
+      - 'docs/**'
+      - '*.md'
 
+# This allows a subsequently queued workflow run to interrupt previous runs
 concurrency:
     group: "${{ github.workflow }}-${{ github.event.pull_request.head.label || github.head_ref || github.ref }}"
     cancel-in-progress: true
@@ -14,9 +26,7 @@ jobs:
   type-tests:
     name: Type Tests
     runs-on: ubuntu-latest
-    timeout-minutes: 20
     strategy:
-      fail-fast: false
       matrix:
         node-version: ['20', '22', '24', '26']
     steps:
@@ -40,9 +50,7 @@ jobs:
   unit-tests:
     name: Unit Tests
     runs-on: ubuntu-latest
-    timeout-minutes: 20
     strategy:
-      fail-fast: false
       matrix:
         node-version: ['16', '18', '20', '22', '24', '26']
     steps:
@@ -66,7 +74,6 @@ jobs:
   test-regression-check-node10:
     name: Test compatibility with Node.js 10
     runs-on: ubuntu-latest
-    timeout-minutes: 20
     permissions:
       contents: read
     steps:
@@ -92,19 +99,15 @@ jobs:
           cp -r ./lib ./node_modules/fast-uri/lib &&
           cp ./index.js ./node_modules/fast-uri/index.js
 
-      # npm 6 (bundled with Node 10) applies this repo's `.npmrc` ignore-scripts=true to
-      # `npm run` as well, so `npm run test:unit` exits 0 having run ZERO tests. Invoke the
-      # tape binary directly with the same expansion so the suite really executes on Node 10.
       - name: Run tests
         run: |
-          node ./node_modules/.bin/tape test/*.js
+          npm run test:unit
         env:
           NODE_OPTIONS: no-network-family-autoselection
 
   test-browser:
     name: Test browser compatibility
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -138,81 +141,14 @@ jobs:
         run: |
           npm run test:browser:${{ matrix.browser }}
 
-  # Upstream calls fastify/workflows/.github/workflows/plugins-ci.yml@v6 here. A `uses:` job
-  # cannot carry `timeout-minutes`, which prepare_env flags and run_build rejects, and the
-  # reusable workflow wants `contents: write` / `pull-requests: write` a fork does not grant.
-  # Inlined with the same node-versions list it was called with, over the three OSes it runs.
-  # Its lint and license-check gates are dropped: neither is a test.
   test:
-    name: Test
     needs:
       - test-regression-check-node10
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 25
     permissions:
-      contents: read
-    strategy:
-      fail-fast: false
-      matrix:
-        os: ['ubuntu-latest', 'windows-latest', 'macos-latest']
-        node-version: ['16', '18', '20', '22', '24', '26']
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-
-      - uses: actions/setup-node@v6
-        with:
-          node-version: ${{ matrix.node-version }}
-          cache: 'npm'
-          cache-dependency-path: package.json
-          check-latest: true
-
-      - name: Install dependencies
-        run: npm install --ignore-scripts
-
-      - name: Run tests
-        run: npm test
-
-  pack:
-    name: Pack tarball
-    needs:
-      - type-tests
-      - unit-tests
-      - test-regression-check-node10
-      - test-browser
-      - test
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-
-      - uses: actions/setup-node@v6
-        with:
-          node-version: '24'
-          check-latest: true
-
-      # The published tarball was packed with npm 11.12.1; the packer decides tarball
-      # ordering and gzip framing, so match it.
-      - name: Pin the publisher's npm
-        run: npm i -g npm@11.12.1
-
-      # fast-uri declares no `files` field and ships no `.npmignore` upstream, so
-      # `.github/workflows/` goes INTO the tarball. Restore the untouched upstream workflows
-      # before packing, and drop the helper dir (kept out of the tarball via .npmignore).
-      - name: Restore pristine workflow files
-        run: |
-          cp seal-pristine/ci.yml.txt .github/workflows/ci.yml
-          cp seal-pristine/lock-threads.yml.txt .github/workflows/lock-threads.yml
-          rm -rf seal-pristine
-
-      - name: Pack
-        run: npm pack --ignore-scripts
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: fast-uri-tarball
-          path: fast-uri-4.1.0.tgz
-          if-no-files-found: error
+      contents: write
+      pull-requests: write
+    uses: fastify/workflows/.github/workflows/plugins-ci.yml@v6
+    with:
+      license-check: true
+      lint: true
+      node-versions: '["16", "18", "20", "22", "24", "26"]'
